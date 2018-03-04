@@ -1,8 +1,6 @@
-use scheduled_thread_pool::ScheduledThreadPool;
 use std::fmt;
 use std::time::Duration;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use {CustomizeConnection, Error, HandleError, LoggingErrorHandler, ManageConnection,
      NopConnectionCustomizer, Pool};
@@ -20,7 +18,6 @@ where
     connection_timeout: Duration,
     error_handler: Box<HandleError<M::Error>>,
     connection_customizer: Box<CustomizeConnection<M::Connection, M::Error>>,
-    thread_pool: Option<Arc<ScheduledThreadPool>>,
     reaper_rate: Duration,
     _p: PhantomData<M>,
 }
@@ -57,7 +54,6 @@ where
             connection_timeout: Duration::from_secs(30),
             error_handler: Box::new(LoggingErrorHandler),
             connection_customizer: Box::new(NopConnectionCustomizer),
-            thread_pool: None,
             reaper_rate: Duration::from_secs(30),
             _p: PhantomData,
         }
@@ -96,15 +92,6 @@ where
     /// Defaults to `None` (equivalent to the value of `max_size`).
     pub fn min_idle(mut self, min_idle: Option<u32>) -> Builder<M> {
         self.min_idle = min_idle;
-        self
-    }
-
-    /// Sets the thread pool used for asynchronous operations such as connection
-    /// creation.
-    ///
-    /// Defaults to a new pool with 3 threads.
-    pub fn thread_pool(mut self, thread_pool: Arc<ScheduledThreadPool>) -> Builder<M> {
-        self.thread_pool = Some(thread_pool);
         self
     }
 
@@ -238,11 +225,6 @@ where
             );
         }
 
-        let thread_pool = match self.thread_pool {
-            Some(thread_pool) => thread_pool,
-            None => Arc::new(ScheduledThreadPool::with_name("r2d2-worker-{}", 3)),
-        };
-
         let config = Config {
             max_size: self.max_size,
             min_idle: self.min_idle,
@@ -252,7 +234,6 @@ where
             connection_timeout: self.connection_timeout,
             error_handler: self.error_handler,
             connection_customizer: self.connection_customizer,
-            thread_pool: thread_pool,
         };
 
         Pool::new_inner(config, manager, self.reaper_rate)
@@ -268,7 +249,6 @@ pub struct Config<C, E> {
     pub connection_timeout: Duration,
     pub error_handler: Box<HandleError<E>>,
     pub connection_customizer: Box<CustomizeConnection<C, E>>,
-    pub thread_pool: Arc<ScheduledThreadPool>,
 }
 
 // manual to avoid bounds on C and E

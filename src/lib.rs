@@ -39,12 +39,12 @@
 #![warn(missing_docs)]
 #![doc(html_root_url = "https://docs.rs/r2d2/0.8")]
 
-extern crate antidote;
 #[macro_use]
 extern crate log;
-extern crate scheduled_thread_pool;
+#[macro_use]
+extern crate may;
 
-use antidote::{Condvar, Mutex, MutexGuard};
+use may::sync::{Condvar, Mutex, MutexGuard};
 use std::cmp;
 use std::collections::VecDeque;
 use std::error;
@@ -223,7 +223,7 @@ where
         M: ManageConnection,
     {
         let new_shared = Arc::downgrade(shared);
-        shared.config.thread_pool.execute_after(delay, move || {
+        go!(move || {
             let shared = match new_shared.upgrade() {
                 Some(shared) => shared,
                 None => return,
@@ -238,7 +238,7 @@ where
             });
             match conn {
                 Ok(conn) => {
-                    let mut internals = shared.internals.lock();
+                    let mut internals = shared.internals.lock().unwrap();
                     internals.last_error = None;
                     let now = Instant::now();
                     let conn = IdleConn {
@@ -254,7 +254,7 @@ where
                     shared.cond.notify_one();
                 }
                 Err(err) => {
-                    shared.internals.lock().last_error = Some(err.to_string());
+                    shared.internals.lock().unwrap().last_error = Some(err.to_string());
                     shared.config.error_handler.handle_error(err);
                     let delay = cmp::max(Duration::from_millis(200), delay);
                     let delay = cmp::min(shared.config.connection_timeout / 2, delay * 2);
@@ -277,7 +277,7 @@ where
     let mut old = VecDeque::with_capacity(shared.config.max_size as usize);
     let mut to_drop = vec![];
 
-    let mut internals = shared.internals.lock();
+    let mut internals = shared.internals.lock().unwrap();
     mem::swap(&mut old, &mut internals.conns);
     let now = Instant::now();
     for conn in old {
@@ -357,15 +357,16 @@ where
             cond: Condvar::new(),
         });
 
-        establish_idle_connections(&shared, &mut shared.internals.lock());
+        establish_idle_connections(&shared, &mut shared.internals.lock().unwrap());
 
         if shared.config.max_lifetime.is_some() || shared.config.idle_timeout.is_some() {
             let s = Arc::downgrade(&shared);
-            shared.config.thread_pool.execute_at_fixed_rate(
-                reaper_rate,
-                reaper_rate,
-                move || reap_connections(&s),
-            );
+            let handle = go!(move || -> () {
+                loop {
+                    may::coroutine::sleep(reaper_rate);
+                    reap_connections(&s);
+                }
+            });
         }
 
         Pool(shared)
@@ -373,7 +374,7 @@ where
 
     fn wait_for_initialization(&self) -> Result<(), Error> {
         let end = Instant::now() + self.0.config.connection_timeout;
-        let mut internals = self.0.internals.lock();
+        let mut internals = self.0.internals.lock().unwrap();
 
         let initial_size = self.0.config.min_idle.unwrap_or(self.0.config.max_size);
 
@@ -382,7 +383,7 @@ where
             if now >= end {
                 return Err(Error(internals.last_error.take()));
             }
-            internals = self.0.cond.wait_timeout(internals, end - now).0;
+            internals = self.0.cond.wait_timeout(internals, end - now).unwrap().0;
         }
 
         Ok(())
@@ -394,7 +395,7 @@ where
     /// error.
     pub fn get(&self) -> Result<PooledConnection<M>, Error> {
         let end = Instant::now() + self.0.config.connection_timeout;
-        let mut internals = self.0.internals.lock();
+        let mut internals = self.0.internals.lock().unwrap();
 
         loop {
             match self.try_get_inner(internals) {
@@ -410,7 +411,7 @@ where
             if now >= end {
                 return Err(Error(internals.last_error.take()));
             }
-            internals = self.0.cond.wait_timeout(internals, end - now).0;
+            internals = self.0.cond.wait_timeout(internals, end - now).unwrap().0;
         }
     }
 
@@ -420,7 +421,7 @@ where
     /// Returns `None` if there are no idle connections available in the pool.
     /// This method will not block waiting to establish a new connection.
     pub fn try_get(&self) -> Option<PooledConnection<M>> {
-        self.try_get_inner(self.0.internals.lock()).ok()
+        self.try_get_inner(self.0.internals.lock().unwrap()).ok()
     }
 
     fn try_get_inner<'a>(
@@ -436,11 +437,11 @@ where
                     if let Err(e) = self.0.manager.is_valid(&mut conn.conn.conn) {
                         let msg = e.to_string();
                         self.0.config.error_handler.handle_error(e);
-                        // FIXME we shouldn't have to lock, unlock, and relock here
-                        internals = self.0.internals.lock();
+                        // FIXME: we shouldn't have to lock, unlock, and relock here
+                        internals = self.0.internals.lock().unwrap();
                         internals.last_error = Some(msg);
                         drop_conns(&self.0, internals, vec![conn.conn.conn]);
-                        internals = self.0.internals.lock();
+                        internals = self.0.internals.lock().unwrap();
                         continue;
                     }
                 }
@@ -459,7 +460,7 @@ where
         // This is specified to be fast, but call it before locking anyways
         let broken = self.0.manager.has_broken(&mut conn.conn);
 
-        let mut internals = self.0.internals.lock();
+        let mut internals = self.0.internals.lock().unwrap();
         if broken {
             drop_conns(&self.0, internals, vec![conn.conn]);
         } else {
@@ -474,7 +475,7 @@ where
 
     /// Returns information about the current state of the pool.
     pub fn state(&self) -> State {
-        let internals = self.0.internals.lock();
+        let internals = self.0.internals.lock().unwrap();
         State {
             connections: internals.num_conns,
             idle_connections: internals.conns.len() as u32,

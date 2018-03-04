@@ -1,4 +1,4 @@
-use antidote::Mutex;
+use may::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering, ATOMIC_BOOL_INIT,
                         ATOMIC_USIZE_INIT};
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -53,7 +53,7 @@ impl ManageConnection for NthConnectFailManager {
     type Error = Error;
 
     fn connect(&self) -> Result<FakeConnection, Error> {
-        let mut n = self.n.lock();
+        let mut n = self.n.lock().unwrap();
         if *n > 0 {
             *n -= 1;
             Ok(FakeConnection(true))
@@ -134,8 +134,8 @@ fn test_issue_2_unlocked_during_is_valid() {
 
         fn is_valid(&self, _: &mut FakeConnection) -> Result<(), Error> {
             if self.first.compare_and_swap(true, false, Ordering::SeqCst) {
-                self.s.lock().send(()).unwrap();
-                self.r.lock().recv().unwrap();
+                self.s.lock().unwrap().send(()).unwrap();
+                self.r.lock().unwrap().recv().unwrap();
             }
             Ok(())
         }

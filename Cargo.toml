@@ -9,6 +9,5 @@ readme = "README.md"
 keywords = ["database", "pool"]
 
 [dependencies]
-antidote = "1.0"
+may = { git = "https://github.com/Xudong-Huang/may.git" }
 log = "0.4"
-scheduled-thread-pool = "0.2"
